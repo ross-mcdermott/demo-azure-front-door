@@ -1,0 +1,168 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {},
+    "variables": {
+        "image": "hashicorp/http-echo",
+        "uniquePortion": "[substring(uniqueString(concat(subscription().subscriptionId,resourceGroup().name)),0,6)]",
+        "containers": [
+            {
+                "location": "westeurope"
+            },
+            {
+                "location": "westus"
+            },
+            {
+                "location": "australiaeast"
+            }
+        ],
+        "frontDoorName": "[concat('demo','-',variables('uniquePortion'),'-afd')]",
+        "frontDoorResourceId": "[resourceId('Microsoft.Network/frontDoors', variables('frontDoorName'))]"
+    },
+    "resources": [
+        {
+            "name": "[concat('demo-aci-',variables('containers')[copyIndex('container-dependency-loop')].location,'-',variables('uniquePortion'),'-aci')]",
+            "type": "Microsoft.ContainerInstance/containerGroups",
+            "apiVersion": "2018-10-01",
+            "location": "[variables('containers')[copyIndex('container-dependency-loop')].location]",
+            "copy": {
+                "name": "container-dependency-loop",
+                "count": "[length(variables('containers'))]"
+            },
+            "properties": {
+                "containers": [
+                    {
+                        "name": "[concat('demo-aci-',variables('containers')[copyIndex('container-dependency-loop')].location,'-',variables('uniquePortion'),'-aci')]",
+                        "properties": {
+                            "image": "[variables('image')]",
+                            "command":[
+                                "/http-echo",
+                                "-text",
+                                "[concat('Hello from ', variables('containers')[copyIndex('container-dependency-loop')].location)]",
+                                "-listen",
+                                ":80"
+                            ],
+                            "ports": [
+                                {
+                                    "port": "80"
+                                }
+                            ],
+                            "resources": {
+                                "requests": {
+                                    "cpu": "1",
+                                    "memoryInGb": "1"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "osType": "Linux",
+                "restartPolicy": "always",
+                "ipAddress": {
+                    "type": "Public",
+                    "ports": [
+                        {
+                            "protocol": "Tcp",
+                            "port": "80"
+                        }
+                    ],
+                    "dnsNameLabel": "[concat('demo-aci-',variables('containers')[copyIndex('container-dependency-loop')].location,'-',variables('uniquePortion'),'-aci')]"
+                }
+            }
+        },
+        {
+            "apiVersion": "2018-08-01",
+            "type": "Microsoft.Network/frontDoors",
+            "name": "[variables('frontDoorName')]",
+            "location": "global",
+            "dependsOn": [
+                "container-dependency-loop"
+            ],
+            "tags": {},
+            "properties": {
+                "routingRules": [
+                    {
+                        "name": "routeToAciInstances",
+                        "properties": {
+                            "frontendEndpoints": [
+                                {
+                                    "id": "[concat(variables('frontDoorResourceId'),'/frontendEndpoints/demoFrontendEndpoint')]"
+                                }
+                            ],
+                            "acceptedProtocols": [
+                                "Http",
+                                "Https"
+                            ],
+                            "patternsToMatch": [
+                                "/*"
+                            ],
+                            "forwardingProtocol": "HttpOnly",
+                            "backendPool": {
+                                "id": "[concat(variables('frontDoorResourceId'),'/backendPools/acibackends')]"
+                            },
+                            "enabledState": "Enabled"
+                        }
+                    }
+                ],
+                "healthProbeSettings": [
+                    {
+                        "name": "demoHealthProbeSettings",
+                        "properties": {
+                            "path": "/",
+                            "protocol": "Http",
+                            "intervalInSeconds": 30
+                        }
+                    }
+                ],
+                "loadBalancingSettings": [
+                    {
+                        "name": "demoLoadBalancingSettings",
+                        "properties": {
+                            "sampleSize": 4,
+                            "successfulSamplesRequired": 2
+                        }
+                    }
+                ],
+                "backendPools": [
+                    {
+                        "name": "acibackends",
+                        "properties": {
+                            "copy": [
+                                {
+                                    "name": "backends",
+                                    "count": "[length(variables('containers'))]",
+                                    "input": {
+                                        "address": "[reference(resourceId('Microsoft.ContainerInstance/containerGroups/', concat('demo-aci-',variables('containers')[copyIndex('backends')].location,'-',variables('uniquePortion'),'-aci'))).ipAddress.fqdn]",
+                                        "httpPort": "80",   
+                                        "httpsPort": "443",
+                                        "weight": "50",
+                                        "priority": "1",
+                                        "enabledState": "Enabled"
+                                    }
+                                }
+                            ],
+                            "loadBalancingSettings": {
+                                "id": "[concat(variables('frontDoorResourceId'),'/loadBalancingSettings/demoLoadBalancingSettings')]"
+                            },
+                            "healthProbeSettings": {
+                                "id": "[concat(variables('frontDoorResourceId'),'/healthProbeSettings/demoHealthProbeSettings')]"
+                            }
+                        }
+                    }
+                ],
+                "frontendEndpoints": [
+                    {
+                        "name": "demoFrontendEndpoint",
+                        "properties": {
+                            "hostName": "[concat(variables('frontDoorName'), '.azurefd.net')]",
+                            "sessionAffinityEnabledState": "Disabled",
+                            "sessionAffinityTtlSeconds": 0
+                        }
+                    }
+                ],
+                "enabledState": "Enabled"
+            }
+        }
+    ],
+    "outputs": {}
+}
